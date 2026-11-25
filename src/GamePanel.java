@@ -1,6 +1,7 @@
 import javax.imageio.ImageIO;
 import javax.swing.*;
 import java.awt.*;
+import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.InputStream;
@@ -8,46 +9,108 @@ import java.io.InputStream;
 public class GamePanel extends JPanel {
     private final GameWindow gameWindow;
     private final TopBar topBar;
+    private final LawnSide lawnSide;
     private BufferedImage lawnImage;
 
     public GamePanel(GameWindow gameWindow) {
+        this(gameWindow, LawnSide.NORMAL);
+    }
+
+    public GamePanel(GameWindow gameWindow, LawnSide lawnSide) {
         this.gameWindow = gameWindow;
+        this.lawnSide = lawnSide != null ? lawnSide : LawnSide.NORMAL;
         setLayout(new BorderLayout());
         loadLawnImage();
 
         // Top bar HUD with sun counter, seed slots (squares), shovel, and menu button
         this.topBar = new TopBar(gameWindow, 6);
         add(topBar, BorderLayout.NORTH);
+
+        // Bottom-corner live preview of the opposite lawn (bottom-right on normal, bottom-left on mirrored)
+        int previewAlignment = this.lawnSide.isMirrored() ? FlowLayout.LEFT : FlowLayout.RIGHT;
+        JPanel bottomCorner = new JPanel(new FlowLayout(previewAlignment, 14, 14));
+        bottomCorner.setOpaque(false);
+        LawnPreviewPanel previewPanel = new LawnPreviewPanel(
+                () -> gameWindow.getOppositePanel(this.lawnSide),
+                gameWindow::toggleLawnSide
+        );
+        bottomCorner.add(previewPanel);
+        add(bottomCorner, BorderLayout.SOUTH);
     }
 
     public TopBar getTopBar() {
         return topBar;
     }
 
+    public LawnSide getLawnSide() {
+        return lawnSide;
+    }
+
+    /**
+     * Renders a scaled live snapshot of this lawn's scene (without HUD overlays)
+     * into the provided graphics context for the opposite lawn's corner preview.
+     */
+    public void renderLivePreview(Graphics2D g2d, int targetWidth, int targetHeight) {
+        int srcW = getWidth() > 0 ? getWidth() : GameWindow.CANVAS_WIDTH;
+        int srcH = getHeight() > 0 ? getHeight() : GameWindow.CANVAS_HEIGHT;
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            setSize(srcW, srcH);
+        }
+
+        Graphics2D scaled = (Graphics2D) g2d.create();
+        scaled.scale((double) targetWidth / srcW, (double) targetHeight / srcH);
+        paintComponent(scaled);
+        scaled.dispose();
+    }
+
     private void loadLawnImage() {
+        lawnImage = loadImage(lawnSide.getClasspathPath(), lawnSide.getFilePath());
+
+        // Fallback: generate horizontally flipped image from normal lawn if mirrored asset is missing
+        if (lawnImage == null && lawnSide == LawnSide.MIRRORED) {
+            BufferedImage normal = loadImage(LawnSide.NORMAL.getClasspathPath(), LawnSide.NORMAL.getFilePath());
+            if (normal != null) {
+                lawnImage = flipHorizontally(normal);
+            }
+        }
+    }
+
+    private BufferedImage loadImage(String classpathPath, String filePath) {
         try {
             // Attempt 1: Load from classpath
-            InputStream is = getClass().getResourceAsStream("/assets/lawn.jpg");
-            if (is != null) {
-                lawnImage = ImageIO.read(is);
-                return;
+            try (InputStream is = getClass().getResourceAsStream(classpathPath)) {
+                if (is != null) {
+                    return ImageIO.read(is);
+                }
             }
 
             // Attempt 2: Load from root assets/ directory
-            File file = new File("assets/lawn.jpg");
+            File file = new File(filePath);
             if (file.exists()) {
-                lawnImage = ImageIO.read(file);
-                return;
+                return ImageIO.read(file);
             }
 
             // Attempt 3: Load from src/assets/ directory
-            file = new File("src/assets/lawn.jpg");
+            file = new File("src/" + filePath);
             if (file.exists()) {
-                lawnImage = ImageIO.read(file);
+                return ImageIO.read(file);
             }
         } catch (Exception e) {
-            System.err.println("Failed to load lawn image: " + e.getMessage());
+            System.err.println("Failed to load image (" + filePath + "): " + e.getMessage());
         }
+        return null;
+    }
+
+    private BufferedImage flipHorizontally(BufferedImage source) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+        BufferedImage flipped = new BufferedImage(width, height, source.getType() != 0 ? source.getType() : BufferedImage.TYPE_INT_RGB);
+        Graphics2D g2d = flipped.createGraphics();
+        AffineTransform transform = AffineTransform.getScaleInstance(-1, 1);
+        transform.translate(-width, 0);
+        g2d.drawImage(source, transform, null);
+        g2d.dispose();
+        return flipped;
     }
 
     @Override
