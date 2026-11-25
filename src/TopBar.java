@@ -1,5 +1,6 @@
 import javax.swing.*;
 import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -17,7 +18,7 @@ public class TopBar extends JPanel {
         setBorder(BorderFactory.createEmptyBorder(10, 15, 10, 15));
 
         // Background container panel with semi-transparent rounded background
-        JPanel seedBankPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0)) {
+        JPanel seedBankPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0)) {
             @Override
             protected void paintComponent(Graphics g) {
                 Graphics2D g2d = (Graphics2D) g.create();
@@ -36,7 +37,7 @@ public class TopBar extends JPanel {
 
         // Sun Counter Box
         JPanel sunBox = new JPanel(new GridLayout(2, 1));
-        sunBox.setPreferredSize(new Dimension(60, 52));
+        sunBox.setPreferredSize(new Dimension(60, 58));
         sunBox.setOpaque(false);
 
         JLabel sunIconLabel = new JLabel("☀️", SwingConstants.CENTER);
@@ -53,11 +54,11 @@ public class TopBar extends JPanel {
 
         // Separator between sun and slots
         JSeparator sep = new JSeparator(SwingConstants.VERTICAL);
-        sep.setPreferredSize(new Dimension(2, 45));
+        sep.setPreferredSize(new Dimension(2, 50));
         sep.setForeground(new Color(80, 80, 80));
         seedBankPanel.add(sep);
 
-        // Seed Packet Placeholder Slots
+        // Seed Packet Slots
         for (int i = 0; i < numSlots; i++) {
             final int index = i;
             SeedSlot slot = new SeedSlot(index, () -> onSlotClicked(index));
@@ -104,10 +105,45 @@ public class TopBar extends JPanel {
         add(rightControls, BorderLayout.EAST);
     }
 
+    /**
+     * Assign a plant type and its image to a specific seed slot.
+     */
+    public void assignPlantType(int index, PlantType type, BufferedImage image) {
+        if (index >= 0 && index < seedSlots.size()) {
+            seedSlots.get(index).setPlantData(type, image);
+        }
+    }
+
+    /**
+     * Get the plant type assigned to a slot (null if empty).
+     */
+    public PlantType getPlantType(int index) {
+        if (index >= 0 && index < seedSlots.size()) {
+            return seedSlots.get(index).getPlantType();
+        }
+        return null;
+    }
+
+    /**
+     * Update each slot's affordability based on current sun count.
+     */
+    public void updateAffordability() {
+        for (SeedSlot slot : seedSlots) {
+            PlantType type = slot.getPlantType();
+            if (type != null) {
+                slot.setAffordable(sunCount >= type.getSunCost());
+            }
+        }
+    }
+
     private void onSlotClicked(int index) {
+        SeedSlot slot = seedSlots.get(index);
+        // Can't select an empty slot
+        if (slot.getPlantType() == null) return;
+
         if (selectedSlotIndex == index) {
             // Deselect
-            seedSlots.get(index).setSelected(false);
+            slot.setSelected(false);
             selectedSlotIndex = -1;
         } else {
             // Deselect previous
@@ -116,7 +152,7 @@ public class TopBar extends JPanel {
             }
             // Select new
             selectedSlotIndex = index;
-            seedSlots.get(index).setSelected(true);
+            slot.setSelected(true);
         }
     }
 
@@ -147,20 +183,24 @@ public class TopBar extends JPanel {
         return button;
     }
 
-    public int getSunCount() {
-        return sunCount;
-    }
+    public int getSunCount() { return sunCount; }
 
     public void setSunCount(int sunCount) {
         this.sunCount = sunCount;
         sunLabel.setText(String.valueOf(sunCount));
+        updateAffordability();
     }
 
-    public int getSelectedSlotIndex() {
-        return selectedSlotIndex;
-    }
+    public int getSelectedSlotIndex() { return selectedSlotIndex; }
 
-    public List<SeedSlot> getSeedSlots() {
-        return seedSlots;
+    public List<SeedSlot> getSeedSlots() { return seedSlots; }
+
+    /**
+     * Select a slot by index via keyboard shortcut.
+     */
+    public void selectSlot(int index) {
+        if (index < 0 || index >= seedSlots.size()) return;
+        if (seedSlots.get(index).getPlantType() == null) return;
+        onSlotClicked(index);
     }
 }
