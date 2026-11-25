@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/PvZClone.iml" filepath="$PROJECT_DIR$/PvZClone.iml" />
+      <module fileurl="file://$PROJECT_DIR$/PvZClone-main.iml" filepath="$PROJECT_DIR$/PvZClone-main.iml" />
     </modules>
   </component>
 </project>
