@@ -1,5 +1,7 @@
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.KeyEvent;
 
 public class GameWindow extends JFrame {
     public static final String MENU_SCREEN = "MENU";
@@ -36,11 +38,33 @@ public class GameWindow extends JFrame {
         setResizable(false);
         setLocationRelativeTo(null);
 
+        // Number keys 1-6 select the corresponding seed slot on whichever lawn is active
+        InputMap inputMap = containerPanel.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
+        ActionMap actionMap = containerPanel.getActionMap();
+        for (int i = 0; i < 6; i++) {
+            final int slotIndex = i;
+            String actionKey = "selectSlot" + i;
+            inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_1 + i, 0), actionKey);
+            actionMap.put(actionKey, new AbstractAction() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    GamePanel active = getActiveGamePanel();
+                    if (active.isShowing()) {
+                        active.getTopBar().selectSlot(slotIndex);
+                    }
+                }
+            });
+        }
+
         cardLayout.show(containerPanel, MENU_SCREEN);
     }
 
     public LawnSide getLawnSide() {
         return currentLawnSide;
+    }
+
+    public GamePanel getActiveGamePanel() {
+        return currentLawnSide == LawnSide.MIRRORED ? mirroredGamePanel : normalGamePanel;
     }
 
     /**
@@ -51,6 +75,18 @@ public class GameWindow extends JFrame {
     }
 
     /**
+     * Keeps the shared sun count synchronized across both lawns.
+     */
+    public void syncSunCount(int sunCount, TopBar source) {
+        if (normalGamePanel.getTopBar() != source) {
+            normalGamePanel.getTopBar().applySunCount(sunCount);
+        }
+        if (mirroredGamePanel.getTopBar() != source) {
+            mirroredGamePanel.getTopBar().applySunCount(sunCount);
+        }
+    }
+
+    /**
      * Transfers the active view to the opposite lawn.
      */
     public void toggleLawnSide() {
@@ -58,6 +94,8 @@ public class GameWindow extends JFrame {
     }
 
     public void showMenu() {
+        normalGamePanel.pauseGame();
+        mirroredGamePanel.pauseGame();
         cardLayout.show(containerPanel, MENU_SCREEN);
     }
 
@@ -72,5 +110,7 @@ public class GameWindow extends JFrame {
         this.currentLawnSide = side;
         String cardName = side == LawnSide.MIRRORED ? MIRRORED_GAME_SCREEN : NORMAL_GAME_SCREEN;
         cardLayout.show(containerPanel, cardName);
+        normalGamePanel.startGame();
+        mirroredGamePanel.startGame();
     }
 }
