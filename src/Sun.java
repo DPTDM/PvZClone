@@ -10,7 +10,7 @@ public class Sun {
     private long lifetime = 0;
     private static final long MAX_LIFETIME = 12000; // 12 seconds
     private boolean collected = false;
-    private static final int SUN_VALUE = 50;
+    private static final int SUN_VALUE = 25;
 
     // Pulsing animation
     private double pulsePhase = 0;

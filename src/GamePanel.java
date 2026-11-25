@@ -7,8 +7,12 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 public class GamePanel extends JPanel implements ActionListener {
     // ---- Grid constants aligned to the lawn brick pattern ----
@@ -34,20 +38,26 @@ public class GamePanel extends JPanel implements ActionListener {
     // Game loop
     private final Timer gameTimer;
     private long lastUpdateTime;
-    private boolean visited = false;
+    private final Random rng = new Random();
 
-    // Zombie spawning
+    // Time-scaled zombie spawning (scales zombie count & rate over time, no HP inflation)
+    private long elapsedGameMs = 0;
     private long zombieSpawnTimer = 0;
-    private long zombieSpawnInterval = 10000; // first zombie at 10 s
-    private int zombiesSpawned = 0;
+    private long zombieSpawnInterval;
+    private long surgeTimerMs = 0;
+    private int surgesTriggered = 0;
+    private long waveBannerTimerMs = 0;
 
     // Plant and zombie images
     private BufferedImage p1Image;
-    private BufferedImage p2Image;
-    private BufferedImage zombieImage;
+    private BufferedImage p1LiteImage;
+    private BufferedImage moonlampIdleImage;
+    private BufferedImage moonlampBloomImage;
+    private final Map<ZombieType, BufferedImage> zombieImages = new EnumMap<>(ZombieType.class);
 
     // Game state
     private boolean gameOver = false;
+    private boolean renderingPreview = false;
 
     public GamePanel(GameWindow gameWindow) {
         this(gameWindow, LawnSide.NORMAL);
@@ -59,17 +69,19 @@ public class GamePanel extends JPanel implements ActionListener {
         this.gridXOffset = this.lawnSide.isMirrored()
                 ? (GameWindow.CANVAS_WIDTH - GRID_X_OFFSET - GRID_COLS * GRID_CELL_W)
                 : GRID_X_OFFSET;
+        this.zombieSpawnInterval = gameWindow.getSettings().getSpawnIntervalMs(0);
         setLayout(new BorderLayout());
         loadLawnImage();
         loadPlantImages();
 
-        // Top bar HUD with sun counter, seed slots, shovel, and menu button
+        // Top bar HUD with sun counter, seed slots, shovel, restart, settings, and menu button
         this.topBar = new TopBar(gameWindow, 6);
         add(topBar, BorderLayout.NORTH);
 
-        // Assign plant types to the first 2 seed slots
+        // Assign plant types to the first 3 seed slots
         topBar.assignPlantType(0, PlantType.SHOOTER, p1Image);
-        topBar.assignPlantType(1, PlantType.SUNFLOWER, p2Image);
+        topBar.assignPlantType(1, PlantType.SUNFLOWER, moonlampBloomImage);
+        topBar.assignPlantType(2, PlantType.LITE_SHOOTER, p1LiteImage);
         topBar.updateAffordability();
 
         // Bottom-corner live preview of the opposite lawn (bottom-right on normal, bottom-left on mirrored)
@@ -78,6 +90,7 @@ public class GamePanel extends JPanel implements ActionListener {
         bottomCorner.setOpaque(false);
         LawnPreviewPanel previewPanel = new LawnPreviewPanel(
                 () -> gameWindow.getOppositePanel(this.lawnSide),
+                () -> GameSettings.formatKey(gameWindow.getSettings().getSwitchLawnKey()),
                 gameWindow::toggleLawnSide
         );
         bottomCorner.add(previewPanel);
@@ -97,7 +110,6 @@ public class GamePanel extends JPanel implements ActionListener {
     }
 
     public void startGame() {
-        visited = true;
         lastUpdateTime = System.currentTimeMillis();
         if (!gameTimer.isRunning()) {
             gameTimer.start();
@@ -108,6 +120,37 @@ public class GamePanel extends JPanel implements ActionListener {
         if (gameTimer.isRunning()) {
             gameTimer.stop();
         }
+    }
+
+    /**
+     * Clears all entities and resets timers and sun for a fresh match.
+     */
+    public void resetGame(int startingSun) {
+        for (int r = 0; r < GRID_ROWS; r++) {
+            for (int c = 0; c < GRID_COLS; c++) {
+                grid[r][c] = null;
+            }
+        }
+        projectiles.clear();
+        suns.clear();
+        zombies.clear();
+
+        gameOver = false;
+        elapsedGameMs = 0;
+        zombieSpawnTimer = 0;
+        surgeTimerMs = 0;
+        surgesTriggered = 0;
+        waveBannerTimerMs = 0;
+        zombieSpawnInterval = gameWindow.getSettings().getSpawnIntervalMs(0);
+        lastUpdateTime = System.currentTimeMillis();
+
+        topBar.clearSelection();
+        topBar.applySunCount(startingSun);
+        repaint();
+    }
+
+    public boolean isGameOver() {
+        return gameOver;
     }
 
     public TopBar getTopBar() {
@@ -129,6 +172,10 @@ public class GamePanel extends JPanel implements ActionListener {
         return -lawnSide.getProjectileDirection();
     }
 
+    public double getZombieSpeed() {
+        return gameWindow.getSettings().getDifficulty().getZombieSpeed();
+    }
+
     /**
      * Renders a scaled live snapshot of this lawn's scene (without HUD overlays)
      * into the provided graphics context for the opposite lawn's corner preview.
@@ -142,8 +189,13 @@ public class GamePanel extends JPanel implements ActionListener {
 
         Graphics2D scaled = (Graphics2D) g2d.create();
         scaled.scale((double) targetWidth / srcW, (double) targetHeight / srcH);
-        paintComponent(scaled);
-        scaled.dispose();
+        renderingPreview = true;
+        try {
+            paintComponent(scaled);
+        } finally {
+            renderingPreview = false;
+            scaled.dispose();
+        }
     }
 
     // ---- Grid helpers (fixed cell sizes) ----
@@ -192,7 +244,35 @@ public class GamePanel extends JPanel implements ActionListener {
             }
         }
 
-        // 2) Check if placing a plant on the grid
+        // 2) Resolve grid cell
+        int[] cell = getGridCell(px, py);
+        if (cell == null) return;
+
+        int row = cell[0], col = cell[1];
+
+        // 3) If shovel is active, dig up the clicked plant without refunding sun
+        if (topBar.isShovelSelected()) {
+            if (grid[row][col] != null) {
+                grid[row][col] = null;
+                topBar.setShovelSelected(false);
+                repaint();
+            }
+            return;
+        }
+
+        // 4) Harvest bloomed Moonlamp before planting
+        if (grid[row][col] instanceof SunFlowerPlant moonlamp && moonlamp.isBloomed()) {
+            int gained = moonlamp.collectSun();
+            if (gained > 0) {
+                topBar.setSunCount(topBar.getSunCount() + gained);
+                repaint();
+            }
+            return;
+        }
+
+        // 3) Check if placing a plant on an empty cell
+        if (grid[row][col] != null) return; // already occupied
+
         int selectedSlot = topBar.getSelectedSlotIndex();
         if (selectedSlot < 0) return;
 
@@ -202,13 +282,6 @@ public class GamePanel extends JPanel implements ActionListener {
         // Check sun cost
         if (topBar.getSunCount() < type.getSunCost()) return;
 
-        // Check grid bounds
-        int[] cell = getGridCell(px, py);
-        if (cell == null) return;
-
-        int row = cell[0], col = cell[1];
-        if (grid[row][col] != null) return; // already occupied
-
         // Place plant
         Plant plant;
         switch (type) {
@@ -216,7 +289,10 @@ public class GamePanel extends JPanel implements ActionListener {
                 plant = new ShooterPlant(row, col, p1Image);
                 break;
             case SUNFLOWER:
-                plant = new SunFlowerPlant(row, col, p2Image);
+                plant = new SunFlowerPlant(row, col, moonlampIdleImage, moonlampBloomImage);
+                break;
+            case LITE_SHOOTER:
+                plant = new ShooterPlant(row, col, 60, 2200L, 12, 20, p1LiteImage);
                 break;
             default:
                 return;
@@ -240,17 +316,25 @@ public class GamePanel extends JPanel implements ActionListener {
 
     // ---- Zombie spawning ----
 
-    private void spawnZombie() {
-        int row = (int) (Math.random() * GRID_ROWS);
+    private void spawnZombieBatch(int count) {
         int panelWidth = getWidth() > 0 ? getWidth() : GameWindow.CANVAS_WIDTH;
         int dir = getZombieDirection();
-        double startX = dir < 0 ? (panelWidth + 20) : -60;
-        double startY = GRID_Y_OFFSET + row * GRID_CELL_H;
-        zombies.add(new Zombie(row, startX, startY, dir, zombieImage));
-        zombiesSpawned++;
+        List<Integer> rows = new ArrayList<>(GRID_ROWS);
+        for (int r = 0; r < GRID_ROWS; r++) {
+            rows.add(r);
+        }
 
-        // Speed up spawning over time (minimum 4 seconds between spawns)
-        zombieSpawnInterval = Math.max(4000, 10000 - zombiesSpawned * 500L);
+        for (int i = 0; i < count; i++) {
+            if (i % GRID_ROWS == 0) {
+                Collections.shuffle(rows, rng);
+            }
+            int row = rows.get(i % GRID_ROWS);
+            int stagger = (i / GRID_ROWS) * 28 + rng.nextInt(26);
+            double startX = dir < 0 ? (panelWidth + 20 + stagger) : (-60 - stagger);
+            double startY = GRID_Y_OFFSET + row * GRID_CELL_H;
+            ZombieType type = gameWindow.getSettings().pickZombieType(elapsedGameMs, rng);
+            zombies.add(new Zombie(row, startX, startY, dir, type, zombieImages.get(type)));
+        }
     }
 
     // ---- Game loop update ----
@@ -266,13 +350,28 @@ public class GamePanel extends JPanel implements ActionListener {
         // Cap delta to avoid jumps after window focus loss
         if (deltaMs > 100) deltaMs = 100;
 
-        // ---- Zombie spawning (only spawn new zombies once player has visited this lawn and while active) ----
-        if (visited && isShowing()) {
-            zombieSpawnTimer += deltaMs;
-            if (zombieSpawnTimer >= zombieSpawnInterval) {
-                zombieSpawnTimer -= zombieSpawnInterval;
-                spawnZombie();
-            }
+        elapsedGameMs += deltaMs;
+        if (waveBannerTimerMs > 0) {
+            waveBannerTimerMs = Math.max(0, waveBannerTimerMs - deltaMs);
+        }
+
+        // ---- Zombie spawning (scales up spawn rate and batch size over time) ----
+        zombieSpawnTimer += deltaMs;
+        if (zombieSpawnTimer >= zombieSpawnInterval) {
+            zombieSpawnTimer -= zombieSpawnInterval;
+            int batchCount = gameWindow.getSettings().getSpawnBatchCount(elapsedGameMs, rng);
+            spawnZombieBatch(batchCount);
+            zombieSpawnInterval = gameWindow.getSettings().getSpawnIntervalMs(elapsedGameMs);
+        }
+
+        // ---- Periodic surge waves ----
+        surgeTimerMs += deltaMs;
+        if (surgeTimerMs >= GameSettings.SURGE_INTERVAL_MS) {
+            surgeTimerMs -= GameSettings.SURGE_INTERVAL_MS;
+            surgesTriggered++;
+            int surgeCount = gameWindow.getSettings().getSurgeZombieCount(surgesTriggered);
+            spawnZombieBatch(surgeCount);
+            waveBannerTimerMs = 3000;
         }
 
         // ---- Update plants ----
@@ -304,7 +403,7 @@ public class GamePanel extends JPanel implements ActionListener {
                 if (z.getRow() == p.getRow()) {
                     Rectangle zBounds = z.getBounds(GRID_CELL_H);
                     if (projBounds.intersects(zBounds)) {
-                        z.takeDamage(25);
+                        z.takeDamage(p.getDamage());
                         hit = true;
                         break;
                     }
@@ -372,25 +471,28 @@ public class GamePanel extends JPanel implements ActionListener {
             g2d.fillRect(0, 0, panelW, panelH);
         }
 
-        // Draw subtle grid overlay aligned to bricks
-        g2d.setColor(new Color(255, 255, 255, 18));
-        g2d.setStroke(new BasicStroke(1f));
-        for (int r = 0; r <= GRID_ROWS; r++) {
-            int y = GRID_Y_OFFSET + r * GRID_CELL_H;
-            g2d.drawLine(gridXOffset, y, gridXOffset + GRID_COLS * GRID_CELL_W, y);
-        }
-        for (int c = 0; c <= GRID_COLS; c++) {
-            int x = gridXOffset + c * GRID_CELL_W;
-            g2d.drawLine(x, GRID_Y_OFFSET, x, GRID_Y_OFFSET + GRID_ROWS * GRID_CELL_H);
+        // Draw subtle grid overlay aligned to bricks when enabled in settings
+        if (gameWindow.getSettings().isShowGridOverlay()) {
+            g2d.setColor(new Color(255, 255, 255, 18));
+            g2d.setStroke(new BasicStroke(1f));
+            for (int r = 0; r <= GRID_ROWS; r++) {
+                int y = GRID_Y_OFFSET + r * GRID_CELL_H;
+                g2d.drawLine(gridXOffset, y, gridXOffset + GRID_COLS * GRID_CELL_W, y);
+            }
+            for (int c = 0; c <= GRID_COLS; c++) {
+                int x = gridXOffset + c * GRID_CELL_W;
+                g2d.drawLine(x, GRID_Y_OFFSET, x, GRID_Y_OFFSET + GRID_ROWS * GRID_CELL_H);
+            }
         }
 
         // Draw plants on the grid
+        boolean mirrored = lawnSide.isMirrored();
         for (int r = 0; r < GRID_ROWS; r++) {
             for (int c = 0; c < GRID_COLS; c++) {
                 if (grid[r][c] != null) {
                     int x = gridXOffset + c * GRID_CELL_W;
                     int y = GRID_Y_OFFSET + r * GRID_CELL_H;
-                    grid[r][c].draw(g2d, x, y, GRID_CELL_W, GRID_CELL_H);
+                    grid[r][c].draw(g2d, x, y, GRID_CELL_W, GRID_CELL_H, mirrored);
                 }
             }
         }
@@ -410,6 +512,23 @@ public class GamePanel extends JPanel implements ActionListener {
             s.draw(g2d);
         }
 
+        // Draw wave and match time badge at bottom-center (skipped in mini-preview)
+        if (!renderingPreview) {
+            drawWaveHud(g2d, panelW, panelH);
+        }
+
+        // Huge wave warning banner during surge
+        if (waveBannerTimerMs > 0 && !gameOver) {
+            g2d.setColor(new Color(0, 0, 0, 150));
+            g2d.fillRect(0, panelH / 2 - 26, panelW, 52);
+
+            g2d.setColor(new Color(255, 70, 70));
+            g2d.setFont(new Font("Arial", Font.BOLD, 26));
+            String waveMsg = "A HUGE WAVE OF ZOMBIES IS APPROACHING!";
+            FontMetrics wfm = g2d.getFontMetrics();
+            g2d.drawString(waveMsg, (panelW - wfm.stringWidth(waveMsg)) / 2, panelH / 2 + wfm.getAscent() / 2 - 4);
+        }
+
         // Game Over overlay
         if (gameOver) {
             g2d.setColor(new Color(0, 0, 0, 150));
@@ -421,7 +540,7 @@ public class GamePanel extends JPanel implements ActionListener {
             FontMetrics fm = g2d.getFontMetrics();
             g2d.drawString(msg,
                     (panelW - fm.stringWidth(msg)) / 2,
-                    panelH / 2);
+                    panelH / 2 - 10);
 
             g2d.setColor(Color.WHITE);
             g2d.setFont(new Font("Arial", Font.PLAIN, 20));
@@ -429,10 +548,42 @@ public class GamePanel extends JPanel implements ActionListener {
             fm = g2d.getFontMetrics();
             g2d.drawString(sub,
                     (panelW - fm.stringWidth(sub)) / 2,
-                    panelH / 2 + 40);
+                    panelH / 2 + 28);
+
+            g2d.setColor(new Color(124, 252, 0));
+            g2d.setFont(new Font("Arial", Font.BOLD, 16));
+            String restartKeyName = GameSettings.formatKey(gameWindow.getSettings().getRestartKey());
+            String hint = "Press [" + restartKeyName + "] or click RESTART to play again";
+            fm = g2d.getFontMetrics();
+            g2d.drawString(hint,
+                    (panelW - fm.stringWidth(hint)) / 2,
+                    panelH / 2 + 60);
         }
 
         g2d.dispose();
+    }
+
+    private void drawWaveHud(Graphics2D g2d, int panelW, int panelH) {
+        int wave = gameWindow.getSettings().getWaveNumber(elapsedGameMs);
+        long totalSec = elapsedGameMs / 1000L;
+        String timeStr = String.format("%d:%02d", totalSec / 60, totalSec % 60);
+        String text = "WAVE " + wave + "  •  " + timeStr;
+
+        g2d.setFont(new Font("Arial", Font.BOLD, 13));
+        FontMetrics fm = g2d.getFontMetrics();
+        int pillW = fm.stringWidth(text) + 28;
+        int pillH = 26;
+        int pillX = (panelW - pillW) / 2;
+        int pillY = panelH - pillH - 12;
+
+        g2d.setColor(new Color(20, 20, 20, 200));
+        g2d.fillRoundRect(pillX, pillY, pillW, pillH, 12, 12);
+        g2d.setColor(new Color(124, 252, 0, 180));
+        g2d.setStroke(new BasicStroke(1.5f));
+        g2d.drawRoundRect(pillX, pillY, pillW, pillH, 12, 12);
+
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(text, pillX + 14, pillY + ((pillH - fm.getHeight()) / 2) + fm.getAscent());
     }
 
     // ---- Image loading ----
@@ -440,7 +591,6 @@ public class GamePanel extends JPanel implements ActionListener {
     private void loadLawnImage() {
         lawnImage = loadImage(lawnSide.getClasspathPath(), lawnSide.getFilePath());
 
-        // Fallback: generate horizontally flipped image from normal lawn if mirrored asset is missing
         if (lawnImage == null && lawnSide == LawnSide.MIRRORED) {
             BufferedImage normal = loadImage(LawnSide.NORMAL.getClasspathPath(), LawnSide.NORMAL.getFilePath());
             if (normal != null) {
@@ -451,8 +601,48 @@ public class GamePanel extends JPanel implements ActionListener {
 
     private void loadPlantImages() {
         p1Image = loadImage("/assets/p1.jpg", "assets/p1.jpg");
-        p2Image = loadImage("/assets/p2.jpg", "assets/p2.jpg");
-        zombieImage = loadImage("/assets/zombie.jpg", "assets/zombie.jpg");
+        p1LiteImage = p1Image != null ? tintImage(p1Image, new Color(95, 225, 210), 0.45f) : null;
+        moonlampIdleImage = loadImage("/assets/moonlamp_idle.png", "assets/moonlamp_idle.png");
+        moonlampBloomImage = loadImage("/assets/moonlamp_bloom.png", "assets/moonlamp_bloom.png");
+        BufferedImage baseZombie = loadImage("/assets/zombie.jpg", "assets/zombie.jpg");
+        if (baseZombie != null) {
+            for (ZombieType type : ZombieType.values()) {
+                zombieImages.put(type, type.getTintColor() == null
+                        ? baseZombie
+                        : tintImage(baseZombie, type.getTintColor(), 0.45f));
+            }
+        }
+    }
+
+    private BufferedImage tintImage(BufferedImage source, Color tint, float strength) {
+        int width = source.getWidth();
+        int height = source.getHeight();
+        BufferedImage tinted = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        int tr = tint.getRed();
+        int tg = tint.getGreen();
+        int tb = tint.getBlue();
+        float inv = 1.0f - strength;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int argb = source.getRGB(x, y);
+                int a = (argb >>> 24) & 0xFF;
+                int r = (argb >>> 16) & 0xFF;
+                int g = (argb >>> 8) & 0xFF;
+                int b = argb & 0xFF;
+
+                // Blend original color toward multiplicative-tinted color to preserve detail
+                int mr = (r * tr) / 255;
+                int mg = (g * tg) / 255;
+                int mb = (b * tb) / 255;
+                int nr = Math.min(255, Math.round(r * inv + ((mr + tr) * 0.5f) * strength));
+                int ng = Math.min(255, Math.round(g * inv + ((mg + tg) * 0.5f) * strength));
+                int nb = Math.min(255, Math.round(b * inv + ((mb + tb) * 0.5f) * strength));
+
+                tinted.setRGB(x, y, (a << 24) | (nr << 16) | (ng << 8) | nb);
+            }
+        }
+        return tinted;
     }
 
     private BufferedImage loadImage(String classpathPath, String filePath) {

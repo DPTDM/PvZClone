@@ -15,14 +15,30 @@ public abstract class Plant {
     public abstract void update(GamePanel game, long deltaMs);
 
     public void draw(Graphics2D g, int x, int y, int cellW, int cellH) {
+        draw(g, x, y, cellW, cellH, false);
+    }
+
+    public void draw(Graphics2D g, int x, int y, int cellW, int cellH, boolean mirrored) {
         if (image != null) {
-            int padding = 4;
-            g.drawImage(image, x + padding, y + padding,
-                    cellW - padding * 2, cellH - padding * 2, null);
+            drawCellImage(g, image, x, y, cellW, cellH, mirrored);
         } else {
             // Fallback colored rectangle
             g.setColor(new Color(0, 200, 0, 180));
             g.fillRoundRect(x + 6, y + 6, cellW - 12, cellH - 12, 8, 8);
+        }
+    }
+
+    protected void drawCellImage(Graphics2D g, BufferedImage img, int x, int y,
+                                 int cellW, int cellH, boolean mirrored) {
+        int padding = 4;
+        int dx1 = x + padding;
+        int dy1 = y + padding;
+        int dx2 = x + cellW - padding;
+        int dy2 = y + cellH - padding;
+        if (!mirrored) {
+            g.drawImage(img, dx1, dy1, dx2 - dx1, dy2 - dy1, null);
+        } else {
+            g.drawImage(img, dx2, dy1, dx1, dy2, 0, 0, img.getWidth(), img.getHeight(), null);
         }
     }
 

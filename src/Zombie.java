@@ -2,61 +2,99 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 
 public class Zombie {
+    private static final long VAULT_DURATION_MS = 420L;
+
     private double x, y;
     private final int row;
     private final int direction; // -1 left (normal), +1 right (mirrored)
+    private final ZombieType type;
     private final BufferedImage image;
-    private int health = 100;
-    private static final double SPEED = 20; // pixels per second (slow shamble)
+    private final int maxHealth;
+    private int health;
+
     private boolean eating = false;
     private int eatingCol = -1;
     private long eatTimer = 0;
-    private static final long EAT_INTERVAL = 1000; // damage every 1 second
-    private static final int EAT_DAMAGE = 20;
+
+    // Vaulter state
+    private boolean hasVaulted = false;
+    private boolean vaulting = false;
+    private long vaultTimer = 0;
+    private double vaultStartX;
+    private double vaultTargetX;
 
     // Bobbing animation
     private double bobPhase = Math.random() * Math.PI * 2;
 
     public Zombie(int row, double x, double y, BufferedImage image) {
-        this(row, x, y, -1, image);
+        this(row, x, y, -1, ZombieType.NORMAL, image);
     }
 
     public Zombie(int row, double x, double y, int direction, BufferedImage image) {
+        this(row, x, y, direction, ZombieType.NORMAL, image);
+    }
+
+    public Zombie(int row, double x, double y, int direction, ZombieType type, BufferedImage image) {
         this.row = row;
         this.x = x;
         this.y = y;
         this.direction = direction >= 0 ? 1 : -1;
+        this.type = type != null ? type : ZombieType.NORMAL;
         this.image = image;
+        this.maxHealth = this.type.getMaxHealth();
+        this.health = this.maxHealth;
     }
 
     public void update(GamePanel game, long deltaMs) {
         bobPhase += deltaMs / 250.0;
 
+        if (vaulting) {
+            vaultTimer += deltaMs;
+            double progress = Math.min(1.0, (double) vaultTimer / VAULT_DURATION_MS);
+            x = vaultStartX + (vaultTargetX - vaultStartX) * progress;
+            if (progress >= 1.0) {
+                vaulting = false;
+            }
+            return;
+        }
+
         if (eating) {
             eatTimer += deltaMs;
-            if (eatTimer >= EAT_INTERVAL) {
-                eatTimer -= EAT_INTERVAL;
+            if (eatTimer >= type.getEatIntervalMs()) {
+                eatTimer -= type.getEatIntervalMs();
                 Plant plant = game.getPlantAt(row, eatingCol);
                 if (plant != null) {
-                    plant.takeDamage(EAT_DAMAGE);
+                    plant.takeDamage(type.getEatDamage());
                 } else {
                     eating = false;
                     eatingCol = -1;
                 }
             }
-        } else {
-            x += direction * SPEED * deltaMs / 1000.0;
+            return;
+        }
 
-            int drawSize = getDrawSize(game.getCellHeight());
-            int col = getFrontCol(game, drawSize);
-            if (col >= 0 && col < GamePanel.GRID_COLS) {
-                Plant plant = game.getPlantAt(row, col);
-                if (plant != null) {
-                    int[] pos = game.getCellPosition(row, col);
-                    boolean reachedPlant = direction < 0
-                            ? x <= pos[0] + game.getCellWidth()
-                            : x + drawSize >= pos[0];
-                    if (reachedPlant) {
+        double speedMult = (type == ZombieType.VAULTER && hasVaulted) ? 0.95 : type.getSpeedMultiplier();
+        x += direction * game.getZombieSpeed() * speedMult * deltaMs / 1000.0;
+
+        int drawSize = getDrawSize(game.getCellHeight());
+        int col = getFrontCol(game, drawSize);
+        if (col >= 0 && col < GamePanel.GRID_COLS) {
+            Plant plant = game.getPlantAt(row, col);
+            if (plant != null) {
+                int[] pos = game.getCellPosition(row, col);
+                boolean reachedPlant = direction < 0
+                        ? x <= pos[0] + game.getCellWidth()
+                        : x + drawSize >= pos[0];
+                if (reachedPlant) {
+                    if (type.canVault() && !hasVaulted) {
+                        hasVaulted = true;
+                        vaulting = true;
+                        vaultTimer = 0;
+                        vaultStartX = x;
+                        vaultTargetX = direction < 0
+                                ? (pos[0] - drawSize - 4)
+                                : (pos[0] + game.getCellWidth() + 4);
+                    } else {
                         eating = true;
                         eatingCol = col;
                         eatTimer = 0;
@@ -78,10 +116,16 @@ public class Zombie {
     }
 
     public void draw(Graphics2D g, int cellH) {
-        double bobOffset = eating ? 0 : Math.sin(bobPhase) * 3;
+        double bobOffset = eating || vaulting ? 0 : Math.sin(bobPhase) * 3;
+        double vaultArcOffset = 0;
+        if (vaulting) {
+            double progress = Math.min(1.0, (double) vaultTimer / VAULT_DURATION_MS);
+            vaultArcOffset = -32.0 * Math.sin(Math.PI * progress);
+        }
+
         int drawSize = getDrawSize(cellH);
         int drawX = (int) x;
-        int drawY = (int) (y + (cellH - drawSize) / 2.0 + bobOffset);
+        int drawY = (int) (y + (cellH - drawSize) / 2.0 + bobOffset + vaultArcOffset);
 
         if (image != null) {
             if (direction < 0) {
@@ -92,8 +136,18 @@ public class Zombie {
                         0, 0, image.getWidth(), image.getHeight(), null);
             }
         } else {
-            g.setColor(new Color(140, 60, 60, 210));
+            Color fallback = type.getTintColor() != null ? type.getTintColor() : new Color(140, 60, 60);
+            g.setColor(new Color(fallback.getRed(), fallback.getGreen(), fallback.getBlue(), 215));
             g.fillRoundRect(drawX, drawY, drawSize, drawSize, 8, 8);
+        }
+
+        // Color-coded outline for quick variant identification
+        if (type.getTintColor() != null) {
+            Stroke prevStroke = g.getStroke();
+            g.setColor(type.getTintColor());
+            g.setStroke(new BasicStroke(2f));
+            g.drawRect(drawX, drawY, drawSize, drawSize);
+            g.setStroke(prevStroke);
         }
 
         // Health bar above zombie
@@ -105,7 +159,7 @@ public class Zombie {
         g.setColor(new Color(60, 0, 0, 180));
         g.fillRect(barX, barY, barWidth, barHeight);
 
-        double healthPct = Math.max(0, health / 100.0);
+        double healthPct = Math.max(0, (double) health / maxHealth);
         Color hpColor = healthPct > 0.5 ? new Color(0, 200, 0) :
                          healthPct > 0.25 ? new Color(255, 165, 0) :
                          new Color(220, 0, 0);
@@ -117,7 +171,10 @@ public class Zombie {
     public double getY() { return y; }
     public int getRow() { return row; }
     public int getDirection() { return direction; }
+    public ZombieType getType() { return type; }
     public int getHealth() { return health; }
+    public boolean isVaulting() { return vaulting; }
+    public boolean hasVaulted() { return hasVaulted; }
 
     public void takeDamage(int amount) {
         health -= amount;

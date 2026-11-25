@@ -27,10 +27,12 @@ public class MainMenuPanel extends JPanel {
 
         // Buttons
         JButton playButton = createMenuButton("PLAY");
+        JButton settingsButton = createMenuButton("SETTINGS");
         JButton quitButton = createMenuButton("QUIT");
 
         // Action listeners
         playButton.addActionListener(e -> gameWindow.showGame());
+        settingsButton.addActionListener(e -> gameWindow.showSettings(GameWindow.MENU_SCREEN));
         quitButton.addActionListener(e -> System.exit(0));
 
         // Add components to layout
@@ -47,6 +49,10 @@ public class MainMenuPanel extends JPanel {
         add(playButton, gbc);
 
         gbc.gridy = 3;
+        gbc.insets = new Insets(10, 10, 10, 10);
+        add(settingsButton, gbc);
+
+        gbc.gridy = 4;
         gbc.insets = new Insets(10, 10, 20, 10);
         add(quitButton, gbc);
     }
@@ -56,6 +62,7 @@ public class MainMenuPanel extends JPanel {
         button.setPreferredSize(new Dimension(220, 50));
         button.setFont(new Font("Arial", Font.BOLD, 20));
         button.setFocusPainted(false);
+        button.setFocusable(false);
         button.setForeground(Color.WHITE);
         button.setBackground(new Color(40, 40, 40));
         button.setBorder(BorderFactory.createLineBorder(new Color(80, 80, 80), 2));

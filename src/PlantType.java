@@ -1,6 +1,7 @@
 public enum PlantType {
     SHOOTER("P1", 100, "p1.jpg"),
-    SUNFLOWER("P2", 50, "p2.jpg");
+    SUNFLOWER("Moonlamp", 50, "moonlamp_bloom.png"),
+    LITE_SHOOTER("P1 Lite", 50, "p1.jpg");
 
     private final String displayName;
     private final int sunCost;
